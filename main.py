@@ -21,7 +21,6 @@ def setup_database():
     ''')
     
     # Insert some dummy data for us to test with!
-    # (Using plain text passwords for the MVP, but we'll encrypt these later)
     try:
         cursor.execute("INSERT INTO users (role, username, password, name) VALUES ('admin', 'ADMIN-01', 'adminpass', 'Principal (Dad)')")
         cursor.execute("INSERT INTO users (role, username, password, name) VALUES ('teacher', 'EMP-012', 'teach123', 'Mr. Smith')")
@@ -65,8 +64,6 @@ def login(request: LoginRequest):
     
     if user:
         user_id, role, name = user
-        # In a real app, we'd return a secure JWT Token here. 
-        # For now, we return a success message and their data!
         return {
             "success": True, 
             "message": "Login successful!", 
@@ -83,7 +80,35 @@ def login(request: LoginRequest):
             detail="Incorrect username or password"
         )
 
-# Run the server
+# --- 5. The Admin Stats Route ---
+@app.get("/admin/stats")
+async def get_admin_stats():
+    try:
+        conn = sqlite3.connect('schoolhub.db')
+        cursor = conn.cursor()
+
+        # 1. Count Total Students
+        cursor.execute("SELECT COUNT(*) FROM users WHERE role='student'")
+        total_students = cursor.fetchone()[0]
+
+        # 2. Count Total Staff (which includes teachers and admins right now)
+        cursor.execute("SELECT COUNT(*) FROM users WHERE role='staff' OR role='admin' OR role='teacher'")
+        total_staff = cursor.fetchone()[0]
+
+        conn.close()
+
+        # Send the numbers back to the app!
+        return {
+            "success": True,
+            "total_students": total_students,
+            "total_staff": total_staff,
+            "pending_leaves": 0,  
+            "active_events": 1    
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+# --- 6. Run the Server (Always goes at the absolute bottom!) ---
 if __name__ == "__main__":
     print("Starting SchoolHub Backend...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
