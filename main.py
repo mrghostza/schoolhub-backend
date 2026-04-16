@@ -5,6 +5,7 @@ import uvicorn
 from contextlib import asynccontextmanager
 from datetime import datetime
 
+# --- 1. Database Setup ---
 def setup_database():
     conn = sqlite3.connect('schoolhub.db')
     cursor = conn.cursor()
@@ -19,9 +20,18 @@ def setup_database():
     try:
         cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('admin', 'ADMIN-01', 'adminpass', 'Principal'))
         cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('teacher', 'EMP-012', 'teach123', 'Mr. Smith'))
-        cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('student', 'STU-2026-045', '15042010', 'Zeeshan'))
+        cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('student', 'STU-2026-045', '15042010', 'Alex Johnson'))
         conn.commit()
     except sqlite3.IntegrityError: pass 
+
+    # NEW: Insert a permanent dummy notice so the board is NEVER empty after Render resets!
+    cursor.execute("SELECT COUNT(*) FROM notices")
+    if cursor.fetchone()[0] == 0:
+        date_str = datetime.now().strftime("%d %b %Y, %I:%M %p")
+        cursor.execute("INSERT INTO notices (title, message, date, author, target) VALUES (?, ?, ?, ?, ?)", 
+                      ("Welcome to SchoolHub", "This is a permanent system notice to verify the board is working. New broadcasts will appear above this!", date_str, "System Admin", "All"))
+        conn.commit()
+
     conn.close()
 
 @asynccontextmanager
@@ -37,26 +47,19 @@ class NoticeRequest(BaseModel): title: str; message: str; author: str; target: s
 class AttendanceRecord(BaseModel): student_username: str; date: str; status: str
 class AttendanceBatchRequest(BaseModel): records: list[AttendanceRecord]
 
-# --- THE SECURITY UPGRADE: Enforcing the Role Toggle ---
 @app.post("/login")
 def login(request: LoginRequest):
     conn = sqlite3.connect('schoolhub.db')
     cursor = conn.cursor()
-    
-    # Check if they are actually a student, OR if they are staff (admin/teacher)
     if request.role == 'student':
         cursor.execute("SELECT id, role, name FROM users WHERE username=? AND password=? AND role='student'", (request.username, request.password))
     else:
         cursor.execute("SELECT id, role, name FROM users WHERE username=? AND password=? AND role IN ('admin', 'teacher')", (request.username, request.password))
-        
     user = cursor.fetchone()
     conn.close()
     
-    if user:
-        return {"success": True, "message": "Login successful!", "user_data": {"id": user[0], "role": user[1], "name": user[2]}}
-    else:
-        # Rejects them if they use the wrong toggle!
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials or wrong role selected.")
+    if user: return {"success": True, "message": "Login successful!", "user_data": {"id": user[0], "role": user[1], "name": user[2]}}
+    else: raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials or wrong role selected.")
 
 @app.get("/admin/stats")
 async def get_admin_stats():
@@ -103,7 +106,23 @@ def get_notices():
         cursor.execute("SELECT id, title, message, date, author, target FROM notices ORDER BY id DESC")
         notices = cursor.fetchall()
         conn.close()
-        notice_list = [{"id": n[0], "title": n[1], "message": n[2], "date": n[3], "author": n[4], "target": n[5]} for n in notices]
+        
+        notice_list = []
+        now = datetime.now()
+        
+        for n in notices:
+            try:
+                # Verify how old the notice is
+                notice_time = datetime.strptime(n[3], "%d %b %Y, %I:%M %p")
+                
+                # NEW: 86400 seconds = exactly 24 hours. 
+                # If it's younger than 24h, add it to the list!
+                if (now - notice_time).total_seconds() <= 86400:
+                    notice_list.append({"id": n[0], "title": n[1], "message": n[2], "date": n[3], "author": n[4], "target": n[5]})
+            except Exception:
+                # If the date fails to parse, default to showing it so nothing breaks
+                notice_list.append({"id": n[0], "title": n[1], "message": n[2], "date": n[3], "author": n[4], "target": n[5]})
+                
         return {"success": True, "notices": notice_list}
     except Exception as e: return {"success": False, "message": str(e), "notices": []}
 
@@ -143,6 +162,29 @@ def get_attendance():
         record_list = [{"student_username": r[0], "date": r[1], "status": r[2]} for r in records]
         return {"success": True, "records": record_list}
     except Exception as e: return {"success": False, "message": str(e), "records": []}
+
+@app.get("/student/attendance")
+def get_student_attendance(username: str):
+    try:
+        conn = sqlite3.connect('schoolhub.db')
+        cursor = conn.cursor()
+        # Fetch all attendance records for this specific student
+        cursor.execute("SELECT status FROM attendance WHERE student_username=?", (username,))
+        records = cursor.fetchall()
+        conn.close()
+        
+        total_classes = len(records)
+        present_classes = sum(1 for r in records if r[0] == 'present')
+        percentage = (present_classes / total_classes * 100) if total_classes > 0 else 0.0
+        
+        return {
+            "success": True, 
+            "present_classes": present_classes, 
+            "total_classes": total_classes, 
+            "percentage": percentage
+        }
+    except Exception as e: 
+        return {"success": False, "message": str(e), "present_classes": 0, "total_classes": 0, "percentage": 0.0}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
