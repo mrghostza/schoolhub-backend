@@ -9,55 +9,19 @@ def setup_database():
     conn = sqlite3.connect('schoolhub.db')
     cursor = conn.cursor()
     
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        role TEXT NOT NULL, 
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        name TEXT NOT NULL,
-        class_assigned TEXT DEFAULT 'None'
-    )
-    ''')
-
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS notices (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        message TEXT NOT NULL,
-        date TEXT NOT NULL,
-        author TEXT NOT NULL,
-        target TEXT NOT NULL DEFAULT 'All'
-    )
-    ''')
-
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS attendance (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_username TEXT NOT NULL,
-        date TEXT NOT NULL,
-        status TEXT NOT NULL
-    )
-    ''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, name TEXT NOT NULL)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS notices (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, message TEXT NOT NULL, date TEXT NOT NULL, author TEXT NOT NULL, target TEXT NOT NULL DEFAULT 'All')''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS attendance (id INTEGER PRIMARY KEY AUTOINCREMENT, student_username TEXT NOT NULL, date TEXT NOT NULL, status TEXT NOT NULL)''')
     
     try: cursor.execute("ALTER TABLE notices ADD COLUMN target TEXT NOT NULL DEFAULT 'All'")
     except: pass 
     
-    try: cursor.execute("ALTER TABLE users ADD COLUMN class_assigned TEXT DEFAULT 'None'")
-    except: pass
-
     try:
-        cursor.execute("UPDATE users SET class_assigned='Class 11A' WHERE username='EMP-012'")
-        cursor.execute("UPDATE users SET class_assigned='Class 11A' WHERE username='STU-2026-045'")
-    except: pass
-    
-    # THE FIX: 'INSERT OR IGNORE' prevents crashes if the user already exists!
-    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('admin', 'ADMIN-01', 'adminpass', 'Principal', 'None'))
-    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('teacher', 'EMP-012', 'teach123', 'Mr. Smith', 'Class 11A'))
-    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-2026-045', '15042010', 'Zeeshan', 'Class 11A'))
-    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-002', '1234', 'Emily Peterson', 'Class 11A'))
-    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-003', '1234', 'Lucas Johnson', 'Class 10B'))
-    conn.commit()
+        cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('admin', 'ADMIN-01', 'adminpass', 'Principal'))
+        cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('teacher', 'EMP-012', 'teach123', 'Mr. Smith'))
+        cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('student', 'STU-2026-045', '15042010', 'Zeeshan'))
+        conn.commit()
+    except sqlite3.IntegrityError: pass 
     conn.close()
 
 @asynccontextmanager
@@ -67,41 +31,32 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SchoolHub API", lifespan=lifespan)
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-    role: str
+class LoginRequest(BaseModel): username: str; password: str; role: str
+class AddUserRequest(BaseModel): username: str; password: str; role: str; name: str
+class NoticeRequest(BaseModel): title: str; message: str; author: str; target: str
+class AttendanceRecord(BaseModel): student_username: str; date: str; status: str
+class AttendanceBatchRequest(BaseModel): records: list[AttendanceRecord]
 
-class AddUserRequest(BaseModel):
-    username: str
-    password: str
-    role: str
-    name: str
-
-class NoticeRequest(BaseModel):
-    title: str
-    message: str
-    author: str
-    target: str
-
-class AttendanceRecord(BaseModel):
-    student_username: str
-    date: str
-    status: str
-
-class AttendanceBatchRequest(BaseModel):
-    records: list[AttendanceRecord]
-
+# --- THE SECURITY UPGRADE: Enforcing the Role Toggle ---
 @app.post("/login")
 def login(request: LoginRequest):
     conn = sqlite3.connect('schoolhub.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT id, role, name, class_assigned FROM users WHERE username=? AND password=?", (request.username, request.password))
+    
+    # Check if they are actually a student, OR if they are staff (admin/teacher)
+    if request.role == 'student':
+        cursor.execute("SELECT id, role, name FROM users WHERE username=? AND password=? AND role='student'", (request.username, request.password))
+    else:
+        cursor.execute("SELECT id, role, name FROM users WHERE username=? AND password=? AND role IN ('admin', 'teacher')", (request.username, request.password))
+        
     user = cursor.fetchone()
     conn.close()
+    
     if user:
-        return {"success": True, "message": "Login successful!", "user_data": {"id": user[0], "role": user[1], "name": user[2], "class_assigned": user[3]}}
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
+        return {"success": True, "message": "Login successful!", "user_data": {"id": user[0], "role": user[1], "name": user[2]}}
+    else:
+        # Rejects them if they use the wrong toggle!
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials or wrong role selected.")
 
 @app.get("/admin/stats")
 async def get_admin_stats():
@@ -114,8 +69,7 @@ async def get_admin_stats():
         total_staff = cursor.fetchone()[0]
         conn.close()
         return {"success": True, "total_students": total_students, "total_staff": total_staff, "pending_leaves": 0, "active_events": 1}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except Exception as e: return {"success": False, "message": str(e)}
 
 @app.post("/admin/add_user")
 def add_user(request: AddUserRequest):
@@ -126,10 +80,8 @@ def add_user(request: AddUserRequest):
         conn.commit()
         conn.close()
         return {"success": True, "message": f"Successfully added {request.name}!"}
-    except sqlite3.IntegrityError:
-        return {"success": False, "message": "Error: This Admission No/ID already exists!"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except sqlite3.IntegrityError: return {"success": False, "message": "Error: This Admission No/ID already exists!"}
+    except Exception as e: return {"success": False, "message": str(e)}
 
 @app.post("/admin/notice")
 def broadcast_notice(request: NoticeRequest):
@@ -141,8 +93,7 @@ def broadcast_notice(request: NoticeRequest):
         conn.commit()
         conn.close()
         return {"success": True, "message": "Notice broadcasted successfully!"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except Exception as e: return {"success": False, "message": str(e)}
 
 @app.get("/notices")
 def get_notices():
@@ -154,21 +105,19 @@ def get_notices():
         conn.close()
         notice_list = [{"id": n[0], "title": n[1], "message": n[2], "date": n[3], "author": n[4], "target": n[5]} for n in notices]
         return {"success": True, "notices": notice_list}
-    except Exception as e:
-        return {"success": False, "message": str(e), "notices": []}
+    except Exception as e: return {"success": False, "message": str(e), "notices": []}
 
 @app.get("/students")
-def get_students(class_name: str): 
+def get_students():
     try:
         conn = sqlite3.connect('schoolhub.db')
         cursor = conn.cursor()
-        cursor.execute("SELECT username, name FROM users WHERE role='student' AND class_assigned=?", (class_name,))
+        cursor.execute("SELECT username, name FROM users WHERE role='student'")
         students = cursor.fetchall()
         conn.close()
         student_list = [{"username": s[0], "name": s[1]} for s in students]
         return {"success": True, "students": student_list}
-    except Exception as e:
-        return {"success": False, "message": str(e), "students": []}
+    except Exception as e: return {"success": False, "message": str(e), "students": []}
 
 @app.post("/attendance/mark")
 def mark_attendance(request: AttendanceBatchRequest):
@@ -181,8 +130,7 @@ def mark_attendance(request: AttendanceBatchRequest):
         conn.commit()
         conn.close()
         return {"success": True, "message": "Attendance saved successfully!"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except Exception as e: return {"success": False, "message": str(e)}
 
 @app.get("/attendance")
 def get_attendance():
@@ -194,8 +142,7 @@ def get_attendance():
         conn.close()
         record_list = [{"student_username": r[0], "date": r[1], "status": r[2]} for r in records]
         return {"success": True, "records": record_list}
-    except Exception as e:
-        return {"success": False, "message": str(e), "records": []}
+    except Exception as e: return {"success": False, "message": str(e), "records": []}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
