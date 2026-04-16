@@ -165,3 +165,29 @@ def broadcast_notice(request: NoticeRequest):
 if __name__ == "__main__":
     print("Starting SchoolHub Backend...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+# --- 8. The Get Notices Route (For Students/Teachers) ---
+@app.get("/notices")
+def get_notices():
+    try:
+        conn = sqlite3.connect('schoolhub.db')
+        cursor = conn.cursor()
+        
+        # Grab all notices, newest first!
+        cursor.execute("SELECT id, title, message, date, author FROM notices ORDER BY id DESC")
+        notices = cursor.fetchall()
+        conn.close()
+        
+        notice_list = []
+        for n in notices:
+            notice_list.append({
+                "id": n[0],
+                "title": n[1],
+                "message": n[2],
+                "date": n[3],
+                "author": n[4]
+            })
+            
+        return {"success": True, "notices": notice_list}
+        
+    except Exception as e:
+        return {"success": False, "message": str(e), "notices": []}
