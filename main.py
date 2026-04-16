@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import sqlite3
 import uvicorn
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 # --- 1. Database Setup ---
 def setup_database():
@@ -19,15 +20,25 @@ def setup_database():
         name TEXT NOT NULL
     )
     ''')
+
+    # Create a table for notices (NEW!)
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS notices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        date TEXT NOT NULL,
+        author TEXT NOT NULL
+    )
+    ''')
     
-    # Insert some dummy data for us to test with!
     try:
-        cursor.execute("INSERT INTO users (role, username, password, name) VALUES ('admin', 'ADMIN-01', 'adminpass', 'Principal (Dad)')")
+        cursor.execute("INSERT INTO users (role, username, password, name) VALUES ('admin', 'ADMIN-01', 'adminpass', 'Principal')")
         cursor.execute("INSERT INTO users (role, username, password, name) VALUES ('teacher', 'EMP-012', 'teach123', 'Mr. Smith')")
         cursor.execute("INSERT INTO users (role, username, password, name) VALUES ('student', 'STU-2026-045', '15042010', 'Zeeshan')")
         conn.commit()
     except sqlite3.IntegrityError:
-        pass # Ignore error if dummy data already exists
+        pass 
         
     conn.close()
 
@@ -50,6 +61,11 @@ class AddUserRequest(BaseModel):
     password: str
     role: str
     name: str
+
+class NoticeRequest(BaseModel):
+    title: str
+    message: str
+    author: str
 
 # --- 4. The Login Route ---
 @app.post("/login")
@@ -102,7 +118,7 @@ async def get_admin_stats():
     except Exception as e:
         return {"success": False, "message": str(e)}
 
-# --- 6. The Add User Route (The CMS) ---
+# --- 6. The Add User Route ---
 @app.post("/admin/add_user")
 def add_user(request: AddUserRequest):
     try:
@@ -123,7 +139,29 @@ def add_user(request: AddUserRequest):
     except Exception as e:
         return {"success": False, "message": str(e)}
 
-# --- 7. Run the Server ---
+# --- 7. The Broadcast Notice Route (NEW!) ---
+@app.post("/admin/notice")
+def broadcast_notice(request: NoticeRequest):
+    try:
+        conn = sqlite3.connect('schoolhub.db')
+        cursor = conn.cursor()
+        
+        # Stamp it with today's date
+        date_str = datetime.now().strftime("%d %b %Y, %I:%M %p")
+        
+        cursor.execute(
+            "INSERT INTO notices (title, message, date, author) VALUES (?, ?, ?, ?)",
+            (request.title, request.message, date_str, request.author)
+        )
+        conn.commit()
+        conn.close()
+        
+        return {"success": True, "message": "Notice broadcasted successfully!"}
+        
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+# --- 8. Run the Server ---
 if __name__ == "__main__":
     print("Starting SchoolHub Backend...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
