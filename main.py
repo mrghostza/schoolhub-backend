@@ -27,26 +27,29 @@ def setup_database():
         cursor.execute("INSERT INTO users (role, username, password, name) VALUES ('student', 'STU-2026-045', '15042010', 'Zeeshan')")
         conn.commit()
     except sqlite3.IntegrityError:
-        # Ignore error if dummy data already exists
-        pass
+        pass # Ignore error if dummy data already exists
         
     conn.close()
 
 # --- 2. FastAPI Setup ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # This runs when the server starts
     setup_database()
     yield
-    # This runs when the server shuts down
 
 app = FastAPI(title="SchoolHub API", lifespan=lifespan)
 
-# --- 3. Data Models (What the Android App will send) ---
+# --- 3. Data Models ---
 class LoginRequest(BaseModel):
     username: str
     password: str
-    role: str # 'student' or 'staff'
+    role: str
+
+class AddUserRequest(BaseModel):
+    username: str
+    password: str
+    role: str
+    name: str
 
 # --- 4. The Login Route ---
 @app.post("/login")
@@ -54,7 +57,6 @@ def login(request: LoginRequest):
     conn = sqlite3.connect('schoolhub.db')
     cursor = conn.cursor()
     
-    # Query the database to see if the user exists
     cursor.execute(
         "SELECT id, role, name FROM users WHERE username=? AND password=?", 
         (request.username, request.password)
@@ -67,37 +69,29 @@ def login(request: LoginRequest):
         return {
             "success": True, 
             "message": "Login successful!", 
-            "user_data": {
-                "id": user_id,
-                "role": role,
-                "name": name
-            }
+            "user_data": {"id": user_id, "role": role, "name": name}
         }
     else:
-        # If no match is found, throw an error
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password"
         )
 
-# --- 5. The Admin Stats Route ---
+# --- 5. The Live Stats Route ---
 @app.get("/admin/stats")
 async def get_admin_stats():
     try:
         conn = sqlite3.connect('schoolhub.db')
         cursor = conn.cursor()
 
-        # 1. Count Total Students
         cursor.execute("SELECT COUNT(*) FROM users WHERE role='student'")
         total_students = cursor.fetchone()[0]
 
-        # 2. Count Total Staff (which includes teachers and admins right now)
         cursor.execute("SELECT COUNT(*) FROM users WHERE role='staff' OR role='admin' OR role='teacher'")
         total_staff = cursor.fetchone()[0]
 
         conn.close()
 
-        # Send the numbers back to the app!
         return {
             "success": True,
             "total_students": total_students,
@@ -108,7 +102,28 @@ async def get_admin_stats():
     except Exception as e:
         return {"success": False, "message": str(e)}
 
-# --- 6. Run the Server (Always goes at the absolute bottom!) ---
+# --- 6. The Add User Route (The CMS) ---
+@app.post("/admin/add_user")
+def add_user(request: AddUserRequest):
+    try:
+        conn = sqlite3.connect('schoolhub.db')
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "INSERT INTO users (username, password, role, name) VALUES (?, ?, ?, ?)",
+            (request.username, request.password, request.role, request.name)
+        )
+        conn.commit()
+        conn.close()
+        
+        return {"success": True, "message": f"Successfully added {request.name}!"}
+        
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "Error: This Admission No/ID already exists!"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+# --- 7. Run the Server ---
 if __name__ == "__main__":
     print("Starting SchoolHub Backend...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
