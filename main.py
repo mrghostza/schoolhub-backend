@@ -5,7 +5,6 @@ import uvicorn
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-# --- 1. Database Setup ---
 def setup_database():
     conn = sqlite3.connect('schoolhub.db')
     cursor = conn.cursor()
@@ -41,32 +40,23 @@ def setup_database():
     )
     ''')
     
-    # Smart Upgrades for existing databases!
-    try:
-        cursor.execute("ALTER TABLE notices ADD COLUMN target TEXT NOT NULL DEFAULT 'All'")
+    try: cursor.execute("ALTER TABLE notices ADD COLUMN target TEXT NOT NULL DEFAULT 'All'")
     except: pass 
     
-    try:
-        cursor.execute("ALTER TABLE users ADD COLUMN class_assigned TEXT DEFAULT 'None'")
+    try: cursor.execute("ALTER TABLE users ADD COLUMN class_assigned TEXT DEFAULT 'None'")
     except: pass
 
-    # Smart Patch: Put your test accounts into Class 11A so they can see each other!
     try:
         cursor.execute("UPDATE users SET class_assigned='Class 11A' WHERE username='EMP-012'")
         cursor.execute("UPDATE users SET class_assigned='Class 11A' WHERE username='STU-2026-045'")
     except: pass
     
-    try:
-        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('admin', 'ADMIN-01', 'adminpass', 'Principal', 'None'))
-        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('teacher', 'EMP-012', 'teach123', 'Mr. Smith', 'Class 11A'))
-        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-2026-045', '15042010', 'Zeeshan', 'Class 11A'))
-        # Adding a fake student in another class to prove filtering works!
-        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-002', '1234', 'Emily Peterson', 'Class 11A'))
-        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-003', '1234', 'Lucas Johnson', 'Class 10B'))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        pass 
-        
+    # THE FIX: 'INSERT OR IGNORE' prevents crashes if the user already exists!
+    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('admin', 'ADMIN-01', 'adminpass', 'Principal', 'None'))
+    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('teacher', 'EMP-012', 'teach123', 'Mr. Smith', 'Class 11A'))
+    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-2026-045', '15042010', 'Zeeshan', 'Class 11A'))
+    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-002', '1234', 'Emily Peterson', 'Class 11A'))
+    cursor.execute("INSERT OR IGNORE INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-003', '1234', 'Lucas Johnson', 'Class 10B'))
     conn.commit()
     conn.close()
 
@@ -77,7 +67,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SchoolHub API", lifespan=lifespan)
 
-# --- 3. Data Models ---
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -103,12 +92,10 @@ class AttendanceRecord(BaseModel):
 class AttendanceBatchRequest(BaseModel):
     records: list[AttendanceRecord]
 
-# --- ROUTES ---
 @app.post("/login")
 def login(request: LoginRequest):
     conn = sqlite3.connect('schoolhub.db')
     cursor = conn.cursor()
-    # Now fetches class_assigned too!
     cursor.execute("SELECT id, role, name, class_assigned FROM users WHERE username=? AND password=?", (request.username, request.password))
     user = cursor.fetchone()
     conn.close()
@@ -170,9 +157,8 @@ def get_notices():
     except Exception as e:
         return {"success": False, "message": str(e), "notices": []}
 
-# --- ATTENDANCE ROUTES ---
 @app.get("/students")
-def get_students(class_name: str): # NEW: Requires a specific class!
+def get_students(class_name: str): 
     try:
         conn = sqlite3.connect('schoolhub.db')
         cursor = conn.cursor()
