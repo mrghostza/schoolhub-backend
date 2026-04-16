@@ -16,7 +16,8 @@ def setup_database():
         role TEXT NOT NULL, 
         username TEXT UNIQUE NOT NULL,
         password TEXT NOT NULL,
-        name TEXT NOT NULL
+        name TEXT NOT NULL,
+        class_assigned TEXT DEFAULT 'None'
     )
     ''')
 
@@ -31,7 +32,6 @@ def setup_database():
     )
     ''')
 
-    # NEW: The Attendance Table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS attendance (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,20 +41,33 @@ def setup_database():
     )
     ''')
     
+    # Smart Upgrades for existing databases!
     try:
         cursor.execute("ALTER TABLE notices ADD COLUMN target TEXT NOT NULL DEFAULT 'All'")
-        conn.commit()
-    except:
-        pass 
+    except: pass 
     
     try:
-        cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('admin', 'ADMIN-01', 'adminpass', 'Principal'))
-        cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('teacher', 'EMP-012', 'teach123', 'Mr. Smith'))
-        cursor.execute("INSERT INTO users (role, username, password, name) VALUES (?, ?, ?, ?)", ('student', 'STU-2026-045', '15042010', 'Zeeshan'))
+        cursor.execute("ALTER TABLE users ADD COLUMN class_assigned TEXT DEFAULT 'None'")
+    except: pass
+
+    # Smart Patch: Put your test accounts into Class 11A so they can see each other!
+    try:
+        cursor.execute("UPDATE users SET class_assigned='Class 11A' WHERE username='EMP-012'")
+        cursor.execute("UPDATE users SET class_assigned='Class 11A' WHERE username='STU-2026-045'")
+    except: pass
+    
+    try:
+        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('admin', 'ADMIN-01', 'adminpass', 'Principal', 'None'))
+        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('teacher', 'EMP-012', 'teach123', 'Mr. Smith', 'Class 11A'))
+        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-2026-045', '15042010', 'Zeeshan', 'Class 11A'))
+        # Adding a fake student in another class to prove filtering works!
+        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-002', '1234', 'Emily Peterson', 'Class 11A'))
+        cursor.execute("INSERT INTO users (role, username, password, name, class_assigned) VALUES (?, ?, ?, ?, ?)", ('student', 'STU-003', '1234', 'Lucas Johnson', 'Class 10B'))
         conn.commit()
     except sqlite3.IntegrityError:
         pass 
         
+    conn.commit()
     conn.close()
 
 @asynccontextmanager
@@ -82,7 +95,6 @@ class NoticeRequest(BaseModel):
     author: str
     target: str
 
-# NEW: Attendance Models
 class AttendanceRecord(BaseModel):
     student_username: str
     date: str
@@ -96,11 +108,12 @@ class AttendanceBatchRequest(BaseModel):
 def login(request: LoginRequest):
     conn = sqlite3.connect('schoolhub.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT id, role, name FROM users WHERE username=? AND password=?", (request.username, request.password))
+    # Now fetches class_assigned too!
+    cursor.execute("SELECT id, role, name, class_assigned FROM users WHERE username=? AND password=?", (request.username, request.password))
     user = cursor.fetchone()
     conn.close()
     if user:
-        return {"success": True, "message": "Login successful!", "user_data": {"id": user[0], "role": user[1], "name": user[2]}}
+        return {"success": True, "message": "Login successful!", "user_data": {"id": user[0], "role": user[1], "name": user[2], "class_assigned": user[3]}}
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
 
 @app.get("/admin/stats")
@@ -157,13 +170,13 @@ def get_notices():
     except Exception as e:
         return {"success": False, "message": str(e), "notices": []}
 
-# --- NEW: ATTENDANCE ROUTES ---
+# --- ATTENDANCE ROUTES ---
 @app.get("/students")
-def get_students():
+def get_students(class_name: str): # NEW: Requires a specific class!
     try:
         conn = sqlite3.connect('schoolhub.db')
         cursor = conn.cursor()
-        cursor.execute("SELECT username, name FROM users WHERE role='student'")
+        cursor.execute("SELECT username, name FROM users WHERE role='student' AND class_assigned=?", (class_name,))
         students = cursor.fetchall()
         conn.close()
         student_list = [{"username": s[0], "name": s[1]} for s in students]
@@ -177,7 +190,6 @@ def mark_attendance(request: AttendanceBatchRequest):
         conn = sqlite3.connect('schoolhub.db')
         cursor = conn.cursor()
         for record in request.records:
-            # Delete old record for this day if it exists, then insert new one
             cursor.execute("DELETE FROM attendance WHERE student_username=? AND date=?", (record.student_username, record.date))
             cursor.execute("INSERT INTO attendance (student_username, date, status) VALUES (?, ?, ?)", (record.student_username, record.date, record.status))
         conn.commit()
@@ -200,5 +212,4 @@ def get_attendance():
         return {"success": False, "message": str(e), "records": []}
 
 if __name__ == "__main__":
-    print("Starting SchoolHub Backend...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
